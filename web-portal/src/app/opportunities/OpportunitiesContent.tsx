@@ -122,16 +122,7 @@ export default function OpportunitiesContent() {
         for (const loc of filters.locations) {
           if (loc === "Remote" && o.is_remote) return true;
           if (loc === "USA" && LOCATION_GROUPS.USA.includes(o.country)) return true;
-          if (loc === "Europe" && LOCATION_GROUPS.Europe.includes(o.country)) return true;
-          if (loc === "Asia" && LOCATION_GROUPS.Asia.includes(o.country)) return true;
-          if (loc === "Other") {
-            const known = [
-              ...LOCATION_GROUPS.USA,
-              ...LOCATION_GROUPS.Europe,
-              ...LOCATION_GROUPS.Asia,
-            ];
-            if (!known.includes(o.country) && !o.is_remote) return true;
-          }
+          if (loc === "South Korea" && LOCATION_GROUPS["South Korea"].includes(o.country)) return true;
         }
         return false;
       });

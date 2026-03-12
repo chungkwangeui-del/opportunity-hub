@@ -22,7 +22,7 @@ interface Props {
   onToggleMobile: () => void;
 }
 
-const LOCATION_OPTIONS = ["USA", "Europe", "Asia", "Remote", "Other"];
+const LOCATION_OPTIONS = ["USA", "South Korea", "Remote"];
 
 function CheckboxGroup({
   label,

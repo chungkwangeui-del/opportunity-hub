@@ -104,9 +104,15 @@ class OpportunityScraper:
 
     def parse_with_gemini(self, raw_text: str, source: str, source_url: str) -> list[dict]:
         truncated = raw_text[:15000]
-        prompt = f'''You are extracting STEM opportunities for US college students.
+        prompt = f'''You are extracting STEM opportunities for college students in the USA or South Korea.
 Return ONLY a valid JSON array. No markdown fences, no explanation.
 If nothing found, return: []
+
+STRICT RULES:
+- ONLY include opportunities located in USA or South Korea.
+- ONLY include opportunities for 2026 (deadlines in 2026 or Rolling).
+- SKIP any opportunity whose deadline has already passed (before {self.today}).
+- SKIP full-time permanent jobs — only student internships, research, fellowships, etc.
 
 Each object:
 {{
@@ -119,7 +125,7 @@ Each object:
     "year_level": array from ["Freshman","Sophomore","Junior","Senior","Graduate","Any"],
     "city": "city or null",
     "state": "US state abbrev or null",
-    "country": "country in English",
+    "country": "USA" or "South Korea",
     "is_remote": true or false,
     "deadline": "YYYY-MM-DD or Rolling or Unknown",
     "is_paid": true or false or null,
@@ -127,7 +133,7 @@ Each object:
     "source": "{source}"
 }}
 
-Only student opportunities. "undergraduates"=["Freshman","Sophomore","Junior","Senior"]. USA for United States.
+"undergraduates"=["Freshman","Sophomore","Junior","Senior"]. Use "USA" for United States, "South Korea" for Korea.
 
 TEXT:
 {truncated}'''
@@ -334,10 +340,11 @@ TEXT:
             ("us", "computer science internship"),
             ("us", "engineering internship"),
             ("us", "data science internship"),
-            ("gb", "STEM internship"),
-            ("de", "science internship"),
+            ("us", "STEM research internship"),
+            ("kr", "science internship"),
+            ("kr", "engineering internship"),
         ]
-        country_map = {"us": "USA", "gb": "UK", "de": "Germany"}
+        country_map = {"us": "USA", "kr": "South Korea"}
         all_opps: list[dict] = []
 
         for cc, query in searches:
@@ -450,9 +457,10 @@ TEXT:
             "DOE SULI": "https://science.osti.gov/wdts/suli",
             "NSF GRFP": "https://www.nsfgrfp.org/",
             "Goldwater": "https://goldwaterscholarship.gov/",
-            "DAAD RISE": "https://www.daad.de/rise/en/",
             "Amgen Scholars": "https://amgenscholars.com/",
             "HHMI": "https://www.hhmi.org/programs/science-education",
+            "KIST": "https://www.kist.re.kr/eng/main/main.do",
+            "NRF Korea": "https://www.nrf.re.kr/eng/main",
         }
 
         for name, url in static_sites.items():
@@ -464,7 +472,6 @@ TEXT:
 
         dynamic_sites = {
             "Pathways to Science": "https://www.pathwaystoscience.org/programs.aspx",
-            "EURAXESS": "https://euraxess.ec.europa.eu/jobs/search",
         }
 
         for name, url in dynamic_sites.items():
@@ -516,6 +523,27 @@ TEXT:
             if u and u not in seen:
                 seen.add(u)
                 unique.append(opp)
+
+        allowed_countries = {"USA", "United States", "South Korea", "Korea"}
+        filtered: list[dict] = []
+        for opp in unique:
+            country = opp.get("country", "")
+            if country and country not in allowed_countries:
+                continue
+            deadline = opp.get("deadline", "Unknown")
+            if deadline not in ("Unknown", "Rolling", "", None):
+                try:
+                    dl = datetime.strptime(deadline[:10], "%Y-%m-%d").date()
+                    if dl < self.today:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            filtered.append(opp)
+
+        dropped = len(unique) - len(filtered)
+        if dropped:
+            logger.info(f"Filtered out {dropped} (expired or non-USA/Korea)")
+        unique = filtered
 
         self.stats["total"] = len(unique)
 

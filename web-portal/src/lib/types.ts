@@ -118,23 +118,11 @@ export const YEAR_COLOR: Record<string, string> = {
 export const COUNTRY_FLAG: Record<string, string> = {
   USA: "🇺🇸",
   "United States": "🇺🇸",
-  UK: "🇬🇧",
-  "United Kingdom": "🇬🇧",
-  Germany: "🇩🇪",
-  Switzerland: "🇨🇭",
-  France: "🇫🇷",
-  Japan: "🇯🇵",
   "South Korea": "🇰🇷",
-  China: "🇨🇳",
-  Canada: "🇨🇦",
-  Australia: "🇦🇺",
-  Netherlands: "🇳🇱",
-  Singapore: "🇸🇬",
-  India: "🇮🇳",
+  Korea: "🇰🇷",
 };
 
 export const LOCATION_GROUPS: Record<string, string[]> = {
   USA: ["USA", "United States"],
-  Europe: ["UK", "United Kingdom", "Germany", "France", "Switzerland", "Netherlands", "Sweden", "Denmark", "Norway", "Italy", "Spain", "Austria", "Belgium"],
-  Asia: ["Japan", "South Korea", "China", "Singapore", "India", "Taiwan", "Hong Kong"],
+  "South Korea": ["South Korea", "Korea"],
 };
