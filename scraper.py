@@ -44,7 +44,7 @@ class OpportunityScraper:
                 raise ValueError(f"{name} is not set in .env")
 
         genai.configure(api_key=gemini_key)
-        self.model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
         self.firecrawl = Firecrawl(api_key=firecrawl_key)
 
         self.usajobs_key = os.getenv("USAJOBS_API_KEY", "")
