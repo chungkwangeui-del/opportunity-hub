@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import google.generativeai as genai
-from firecrawl import FirecrawlApp
+from firecrawl import Firecrawl
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -45,7 +45,7 @@ class OpportunityScraper:
 
         genai.configure(api_key=gemini_key)
         self.model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
-        self.firecrawl = FirecrawlApp(api_key=firecrawl_key)
+        self.firecrawl = Firecrawl(api_key=firecrawl_key)
 
         self.usajobs_key = os.getenv("USAJOBS_API_KEY", "")
         self.usajobs_email = os.getenv("USAJOBS_EMAIL", "")
@@ -89,7 +89,7 @@ class OpportunityScraper:
 
     def scrape_dynamic(self, url: str, name: str) -> str | None:
         try:
-            result = self.firecrawl.scrape_url(url, params={"formats": ["markdown"]})
+            result = self.firecrawl.scrape(url, formats=["markdown"])
             text = ""
             if isinstance(result, dict):
                 text = result.get("markdown", "")
