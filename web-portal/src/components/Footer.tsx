@@ -2,9 +2,9 @@ export default function Footer() {
   return (
     <footer className="border-t border-gray-200 bg-gray-50">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-6 text-sm text-gray-500">
-        <p>&copy; 2026 OpportunityHub &middot; Built for STEM students</p>
+        <p>&copy; 2026 OpportunityHub &middot; Built for STEM students &middot; Made by Kwangui Chung (UIUC)</p>
         <a
-          href="https://github.com"
+          href="https://github.com/chungkwangeui-del/opportunity-hub"
           target="_blank"
           rel="noopener noreferrer"
           className="transition-colors hover:text-blue-600"

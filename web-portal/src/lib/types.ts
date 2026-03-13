@@ -126,3 +126,13 @@ export const LOCATION_GROUPS: Record<string, string[]> = {
   USA: ["USA", "United States"],
   "South Korea": ["South Korea", "Korea"],
 };
+
+export interface FilterState {
+  q: string;
+  fields: string[];
+  types: string[];
+  years: string[];
+  locations: string[];
+  paidOnly: boolean;
+  sort: "newest" | "deadline";
+}

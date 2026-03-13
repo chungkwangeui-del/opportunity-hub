@@ -1,4 +1,10 @@
+"use client";
+
+import Link from "next/link";
+import { useState, useEffect } from "react";
 import { Opportunity, TYPE_COLOR, YEAR_COLOR, COUNTRY_FLAG } from "@/lib/types";
+import { formatUpdatedDate } from "@/lib/format";
+import { isBookmarked, toggleBookmark } from "@/lib/bookmarks";
 
 function deadlineBadge(deadline: string) {
   if (!deadline || deadline === "Unknown")
@@ -6,7 +12,7 @@ function deadlineBadge(deadline: string) {
   if (deadline === "Rolling")
     return { text: "Rolling", cls: "bg-emerald-100 text-emerald-700" };
 
-  const d = new Date(deadline);
+  const d = new Date(deadline + "T23:59:59");
   const diff = Math.ceil((d.getTime() - Date.now()) / 86_400_000);
   if (diff < 0) return { text: "Expired", cls: "bg-red-100 text-red-700" };
   if (diff <= 14) return { text: `D-${diff}`, cls: "bg-orange-100 text-orange-700" };
@@ -18,20 +24,45 @@ export default function OpportunityCard({ opp }: { opp: Opportunity }) {
   const dl = deadlineBadge(opp.deadline);
   const flag = COUNTRY_FLAG[opp.country] ?? "🌍";
   const loc = [opp.city, opp.state, opp.country].filter(Boolean).join(", ");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setSaved(isBookmarked(opp.id));
+    const handler = () => setSaved(isBookmarked(opp.id));
+    window.addEventListener("bookmarks-changed", handler);
+    return () => window.removeEventListener("bookmarks-changed", handler);
+  }, [opp.id]);
 
   return (
     <div className="group flex flex-col justify-between rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-all duration-200 hover:-translate-y-1 hover:shadow-md">
       <div>
-        {/* Header row: org + type badge */}
         <div className="flex items-start justify-between gap-2">
           <p className="text-sm font-bold text-gray-900 leading-snug">{opp.organization}</p>
-          <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLOR[opp.opportunity_type] ?? "bg-gray-100 text-gray-600"}`}>
-            {opp.opportunity_type}
-          </span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              onClick={() => toggleBookmark(opp.id)}
+              className="text-gray-300 transition-colors hover:text-amber-500"
+              aria-label={saved ? `Remove ${opp.title} from saved` : `Save ${opp.title}`}
+              type="button"
+            >
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill={saved ? "currentColor" : "none"} stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" className={saved ? "text-amber-500" : ""} />
+              </svg>
+            </button>
+            <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLOR[opp.opportunity_type] ?? "bg-gray-100 text-gray-600"}`}>
+              {opp.opportunity_type}
+            </span>
+          </div>
         </div>
 
-        {/* Title */}
-        <h3 className="mt-1 text-base font-semibold text-blue-600 leading-snug">{opp.title}</h3>
+        <h3 className="mt-1 text-base font-semibold leading-snug">
+          <Link
+            href={`/opportunities/${opp.id}`}
+            className="text-blue-600 hover:text-blue-800 hover:underline"
+          >
+            {opp.title}
+          </Link>
+        </h3>
 
         {/* Field tag */}
         <div className="mt-2">
@@ -69,6 +100,11 @@ export default function OpportunityCard({ opp }: { opp: Opportunity }) {
           <p className="mt-2 text-xs text-emerald-600">💰 {opp.compensation}</p>
         )}
 
+        {/* Updated date */}
+        {opp.updated_at && (
+          <p className="mt-1.5 text-[11px] text-gray-400">{formatUpdatedDate(opp.updated_at)}</p>
+        )}
+
         {/* Description */}
         <p className="mt-2 line-clamp-2 text-sm leading-relaxed text-gray-600">{opp.description}</p>
       </div>
@@ -78,6 +114,7 @@ export default function OpportunityCard({ opp }: { opp: Opportunity }) {
         href={opp.url}
         target="_blank"
         rel="noopener noreferrer"
+        aria-label={`Apply to ${opp.title} at ${opp.organization}`}
         className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-blue-600 transition-colors hover:text-blue-800"
       >
         Apply <span className="transition-transform group-hover:translate-x-0.5">→</span>

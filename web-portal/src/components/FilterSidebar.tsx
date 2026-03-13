@@ -1,17 +1,7 @@
 "use client";
 
-import { FIELDS, OPPORTUNITY_TYPES, YEAR_LEVELS } from "@/lib/types";
+import { FIELDS, OPPORTUNITY_TYPES, YEAR_LEVELS, FilterState } from "@/lib/types";
 import SearchBar from "./SearchBar";
-
-interface FilterState {
-  q: string;
-  fields: string[];
-  types: string[];
-  years: string[];
-  locations: string[];
-  paidOnly: boolean;
-  sort: "newest" | "deadline";
-}
 
 interface Props {
   filters: FilterState;
@@ -116,7 +106,12 @@ export default function FilterSidebar({ filters, onChange, onReset, resultCount,
   return (
     <>
       {/* Mobile toggle */}
-      <button onClick={onToggleMobile} className="mb-4 flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 lg:hidden">
+      <button
+        onClick={onToggleMobile}
+        className="mb-4 flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 lg:hidden"
+        aria-expanded={mobileOpen}
+        aria-label="Toggle filters"
+      >
         <span>Filters {resultCount > 0 && `(${resultCount})`}</span>
         <span className={`transition-transform ${mobileOpen ? "rotate-180" : ""}`}>▾</span>
       </button>

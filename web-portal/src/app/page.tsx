@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   OPPORTUNITY_TYPES,
@@ -20,39 +20,70 @@ export default function Home() {
   const [typeCounts, setTypeCounts] = useState<Record<string, number>>({});
   const [fieldCounts, setFieldCounts] = useState<Record<string, number>>({});
   const [latest, setLatest] = useState<Opportunity[]>([]);
+  const [closingSoon, setClosingSoon] = useState<Opportunity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function load() {
-      const { data: rows } = await supabase
-        .from("opportunities")
-        .select("country, field, opportunity_type")
-        .eq("is_active", true);
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
 
-      if (rows) {
-        setTotalCount(rows.length);
-        setCountryCount(new Set(rows.map((r) => r.country).filter(Boolean)).size);
-        setFieldCount(new Set(rows.map((r) => r.field).filter(Boolean)).size);
+    const { data: rows, error: statsErr } = await supabase
+      .from("opportunities")
+      .select("country, field, opportunity_type")
+      .eq("is_active", true);
 
-        const tc: Record<string, number> = {};
-        const fc: Record<string, number> = {};
-        for (const r of rows) {
-          tc[r.opportunity_type] = (tc[r.opportunity_type] || 0) + 1;
-          fc[r.field] = (fc[r.field] || 0) + 1;
-        }
-        setTypeCounts(tc);
-        setFieldCounts(fc);
+    if (statsErr) {
+      setError("Failed to load data. Please try again later.");
+      setLoading(false);
+      return;
+    }
+
+    if (rows) {
+      setTotalCount(rows.length);
+      setCountryCount(new Set(rows.map((r) => r.country).filter(Boolean)).size);
+      setFieldCount(new Set(rows.map((r) => r.field).filter(Boolean)).size);
+
+      const tc: Record<string, number> = {};
+      const fc: Record<string, number> = {};
+      for (const r of rows) {
+        if (r.opportunity_type) tc[r.opportunity_type] = (tc[r.opportunity_type] || 0) + 1;
+        if (r.field) fc[r.field] = (fc[r.field] || 0) + 1;
       }
+      setTypeCounts(tc);
+      setFieldCounts(fc);
+    }
 
-      const { data: recent } = await supabase
+    const today = new Date().toISOString().slice(0, 10);
+    const thirtyDays = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+
+    const [recentRes, closingRes] = await Promise.all([
+      supabase
         .from("opportunities")
         .select("*")
         .eq("is_active", true)
         .order("created_at", { ascending: false })
-        .limit(6);
-      if (recent) setLatest(recent as Opportunity[]);
-    }
-    load();
+        .limit(6),
+      supabase
+        .from("opportunities")
+        .select("*")
+        .eq("is_active", true)
+        .neq("deadline", "Unknown")
+        .neq("deadline", "Rolling")
+        .gte("deadline", today)
+        .lte("deadline", thirtyDays)
+        .order("deadline", { ascending: true })
+        .limit(6),
+    ]);
+
+    if (recentRes.data) setLatest(recentRes.data as Opportunity[]);
+    if (closingRes.data) setClosingSoon(closingRes.data as Opportunity[]);
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   return (
     <>
@@ -64,7 +95,7 @@ export default function Home() {
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-lg text-gray-600">
           Research positions, internships, fellowships, and more — updated daily
-          from hundreds of sources worldwide.
+          from dozens of trusted sources.
         </p>
         <Link
           href="/opportunities"
@@ -73,6 +104,20 @@ export default function Home() {
           Find Opportunities <span>→</span>
         </Link>
       </section>
+
+      {error && (
+        <div className="mx-auto max-w-2xl px-6 py-8">
+          <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center">
+            <p className="text-red-600">{error}</p>
+            <button
+              onClick={load}
+              className="mt-4 rounded-full bg-red-600 px-6 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Opportunity Types (8 cards) */}
       <section className="mx-auto max-w-6xl px-6 py-16">
@@ -131,12 +176,39 @@ export default function Home() {
             { val: "Daily", label: "Updated" },
           ].map((s, i) => (
             <div key={i} className="text-center">
-              <p className="text-3xl font-bold text-blue-600">{s.val}</p>
+              <p className={`text-3xl font-bold text-blue-600 ${loading && typeof s.val === "number" ? "animate-pulse" : ""}`}>{loading && typeof s.val === "number" ? "—" : s.val}</p>
               <p className="mt-1 text-sm text-gray-500">{s.label}</p>
             </div>
           ))}
         </div>
       </section>
+
+      {/* Closing Soon */}
+      {closingSoon.length > 0 && (
+        <section className="mx-auto max-w-6xl px-6 py-16">
+          <div className="mb-8 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-orange-100 text-orange-600">
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z" />
+                </svg>
+              </span>
+              <h2 className="text-2xl font-bold text-gray-900">Closing Soon</h2>
+            </div>
+            <Link
+              href="/opportunities?sort=deadline"
+              className="text-sm font-medium text-orange-600 hover:text-orange-800"
+            >
+              View all by deadline →
+            </Link>
+          </div>
+          <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            {closingSoon.map((opp) => (
+              <OpportunityCard key={opp.id} opp={opp} />
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Latest opportunities */}
       {latest.length > 0 && (

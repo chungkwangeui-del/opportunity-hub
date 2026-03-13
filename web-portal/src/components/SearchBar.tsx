@@ -13,6 +13,12 @@ export default function SearchBar({ value, onChange }: Props) {
 
   useEffect(() => setLocal(value), [value]);
 
+  useEffect(() => {
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
   const handle = (v: string) => {
     setLocal(v);
     if (timer.current) clearTimeout(timer.current);
@@ -28,11 +34,24 @@ export default function SearchBar({ value, onChange }: Props) {
       </span>
       <input
         type="text"
-        placeholder="Search organizations, titles..."
+        placeholder="Search organizations, titles, descriptions..."
         value={local}
         onChange={(e) => handle(e.target.value)}
-        className="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-4 text-sm text-gray-700 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
+        aria-label="Search opportunities"
+        className="w-full rounded-lg border border-gray-300 bg-white py-2.5 pl-10 pr-9 text-sm text-gray-700 outline-none transition-colors focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
       />
+      {local && (
+        <button
+          onClick={() => handle("")}
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+          aria-label="Clear search"
+          type="button"
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

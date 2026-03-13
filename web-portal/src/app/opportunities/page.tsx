@@ -1,8 +1,12 @@
-"use client";
-
 import { Suspense } from "react";
+import type { Metadata } from "next";
 import OpportunitiesContent from "./OpportunitiesContent";
 import LoadingSkeleton from "@/components/LoadingSkeleton";
+
+export const metadata: Metadata = {
+  title: "Opportunities — OpportunityHub",
+  description: "Browse STEM research positions, internships, fellowships, scholarships, and more for college students in the USA and South Korea.",
+};
 
 export default function OpportunitiesPage() {
   return (
