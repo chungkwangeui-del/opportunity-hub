@@ -1,31 +1,11 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import type { Metadata } from "next";
-import { createClient } from "@supabase/supabase-js";
 import type { Opportunity } from "@/lib/types";
 import { TYPE_COLOR, YEAR_COLOR, COUNTRY_FLAG, FIELD_EMOJI } from "@/lib/types";
-import { formatUpdatedDateFull } from "@/lib/format";
+import { formatUpdatedDateFull, deadlineBadge } from "@/lib/format";
+import { supabase } from "@/lib/supabase";
 import BookmarkButton from "./BookmarkButton";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
-
-function getServerClient() {
-  return createClient(supabaseUrl, supabaseKey);
-}
-
-function deadlineBadge(deadline: string) {
-  if (!deadline || deadline === "Unknown")
-    return { text: "TBD", cls: "bg-gray-100 text-gray-500" };
-  if (deadline === "Rolling")
-    return { text: "Rolling", cls: "bg-emerald-100 text-emerald-700" };
-  const d = new Date(deadline + "T23:59:59");
-  const diff = Math.ceil((d.getTime() - Date.now()) / 86_400_000);
-  if (diff < 0) return { text: "Expired", cls: "bg-red-100 text-red-700" };
-  if (diff <= 14) return { text: `D-${diff}`, cls: "bg-orange-100 text-orange-700" };
-  if (diff <= 30) return { text: `D-${diff}`, cls: "bg-yellow-100 text-yellow-700" };
-  return { text: deadline, cls: "bg-gray-100 text-gray-500" };
-}
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -33,8 +13,7 @@ interface PageProps {
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const { id } = await params;
-  const sb = getServerClient();
-  const { data } = await sb.from("opportunities").select("title, organization, description").eq("id", id).single();
+  const { data } = await supabase.from("opportunities").select("title, organization, description").eq("id", id).single();
   if (!data) return { title: "Opportunity Not Found" };
   return {
     title: `${data.title} at ${data.organization} — OpportunityHub`,
@@ -44,8 +23,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 export default async function OpportunityDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const sb = getServerClient();
-  const { data, error } = await sb.from("opportunities").select("*").eq("id", id).single();
+  const { data, error } = await supabase.from("opportunities").select("*").eq("id", id).single();
 
   if (error || !data) notFound();
 
@@ -55,7 +33,7 @@ export default async function OpportunityDetailPage({ params }: PageProps) {
   const loc = [opp.city, opp.state, opp.country].filter(Boolean).join(", ");
   const emoji = FIELD_EMOJI[opp.field] ?? "⚡";
 
-  const { data: related } = await sb
+  const { data: related } = await supabase
     .from("opportunities")
     .select("id, title, organization, field, opportunity_type, deadline, country")
     .eq("is_active", true)

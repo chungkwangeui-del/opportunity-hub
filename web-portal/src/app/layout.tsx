@@ -31,7 +31,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${jakarta.variable} antialiased`}>
+      <body className={`${jakarta.variable} font-sans antialiased`}>
         <div className="flex min-h-screen flex-col">
           <a
             href="#main-content"

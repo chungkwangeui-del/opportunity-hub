@@ -5,7 +5,7 @@ import { useState } from "react";
 const FAQ = [
   {
     q: "How often is data updated?",
-    a: "Our AI scraper runs daily via GitHub Actions. It checks curated programs, USAJobs and Adzuna APIs, aggregator sites (Pathways to Science, NSF REU Search, Cientifico Latino, ORISE), and Indeed.",
+    a: "Our AI scraper runs daily via GitHub Actions. It checks curated programs, USAJobs, Adzuna, The Muse, JSearch APIs, aggregator sites (Pathways to Science, NSF REU Search, Cientifico Latino, ORISE), and Indeed.",
   },
   {
     q: "What fields are covered?",
@@ -17,7 +17,7 @@ const FAQ = [
   },
   {
     q: "Where do you find opportunities?",
-    a: "We track curated programs (ORISE, Microsoft Research, HHMI, Samsung Research, SNU, IBS, and more), plus Pathways to Science, NSF REU Search, ORISE Zintellect, USAJobs, and Adzuna APIs.",
+    a: "We track curated programs (ORISE, Microsoft Research, HHMI, Samsung Research, SNU, IBS, and more), plus Pathways to Science, NSF REU Search, ORISE Zintellect, USAJobs, Adzuna, The Muse, JSearch, and Indeed.",
   },
   {
     q: "What locations are covered?",

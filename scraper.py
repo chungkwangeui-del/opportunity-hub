@@ -3,6 +3,8 @@ import json
 import time
 import re
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, date
 from urllib.parse import urlparse
 from typing import Optional
@@ -29,6 +31,14 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("OpportunityHub")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+GEMINI_EXTRACT_TRUNCATE = 15_000
+GEMINI_DEADLINE_TRUNCATE = 8_000
+MIN_SCRAPE_LENGTH = 200
+DESCRIPTION_MAX_LEN = 2000
 
 # ---------------------------------------------------------------------------
 # Validation & Normalization
@@ -105,6 +115,19 @@ def normalize_type(val: str | None) -> str:
     if v in VALID_TYPES:
         return v
     return TYPE_ALIASES.get(v.lower(), v)
+
+
+def _jsearch_comp(min_sal: int | float | None, max_sal: int | float | None) -> str | None:
+    if min_sal is None and max_sal is None:
+        return None
+    try:
+        mn = int(min_sal) if min_sal is not None else 0
+        mx = int(max_sal) if max_sal is not None else 0
+        if mn or mx:
+            return f"${mn:,}-${mx:,}" if mx else f"${mn:,}"
+    except (TypeError, ValueError):
+        pass
+    return None
 
 
 def parse_deadline(dl: str) -> date | None:
@@ -240,6 +263,8 @@ class OpportunityScraper:
         self.usajobs_email = os.getenv("USAJOBS_EMAIL", "")
         self.adzuna_id = os.getenv("ADZUNA_APP_ID", "")
         self.adzuna_key = os.getenv("ADZUNA_APP_KEY", "")
+        self.themuse_key = os.getenv("THE_MUSE_API_KEY", "")
+        self.rapidapi_key = os.getenv("RAPIDAPI_KEY", "")
 
         self.session = requests.Session()
         retries = Retry(total=3, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
@@ -256,8 +281,9 @@ class OpportunityScraper:
             "total": 0,
             "saved": 0,
             "errors": 0,
-            "by_tier": {"curated": 0, "api": 0, "rotation": 0, "aggregator": 0},
+            "by_tier": {"curated": 0, "api": 0, "muse": 0, "jsearch": 0, "rotation": 0, "aggregator": 0},
         }
+        self._stats_lock = threading.Lock()
         self.today = date.today()
         self.weekday = self.today.weekday()  # 0=Mon … 6=Sun
 
@@ -297,13 +323,11 @@ class OpportunityScraper:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), retry=retry_if_exception_type(Exception), reraise=True)
     def _call_gemini(self, prompt: str, json_mode: bool = False) -> str:
-        config = {}
-        if json_mode:
-            config = {"response_mime_type": "application/json"}
+        config = {"response_mime_type": "application/json"} if json_mode else None
         response = self.genai.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
-            config=config if config else None,
+            config=config,
         )
         return response.text.strip()
 
@@ -318,7 +342,7 @@ class OpportunityScraper:
         return text.strip()
 
     def parse_with_gemini(self, raw_text: str, source: str, source_url: str) -> list[dict]:
-        truncated = raw_text[:15000]
+        truncated = raw_text[:GEMINI_EXTRACT_TRUNCATE]
         prompt = f'''Extract STEM opportunities for US/South Korea college students from the text below.
 Return a JSON array of objects. If nothing found, return [].
 
@@ -326,13 +350,14 @@ RULES:
 - ONLY USA or South Korea locations.
 - Deadlines in 2026 or later, or Rolling. Skip anything before {self.today}.
 - Skip full-time permanent jobs. Only student programs: internships, REUs, fellowships, scholarships, etc.
+- CATALOG PAGES: If the page lists program names with links (e.g. Pathways to Science, NSF REU), extract EACH program as an opportunity. Use the link text or program name as "title", the href as "url" (use full URL; if relative, prepend the base domain from {source_url}). Use surrounding text for "description" if available; otherwise a brief summary is fine.
 
 Schema per object:
 {{
   "organization": "string",
   "title": "string",
-  "url": "string (use {source_url} as fallback)",
-  "description": "string (2-3 sentences)",
+  "url": "string (use {source_url} as fallback; for catalog pages use each program's link)",
+  "description": "string (2-3 sentences, or brief summary from context)",
   "field": "Chemistry|Biology|Physics|Computer Science|Engineering|Math|Data Science|Environmental Science|Neuroscience|Materials Science|Biomedical|Astronomy|General STEM",
   "opportunity_type": "Research|Internship|Fellowship|Scholarship|Competition|Conference|Summer Program|Co-op",
   "year_level": ["Freshman","Sophomore","Junior","Senior","Graduate","Any"],
@@ -346,7 +371,7 @@ Schema per object:
   "source": "{source}"
 }}
 
-Use "USA" for United States, "South Korea" for Korea. "undergraduates" = Freshman through Senior.
+Use "USA" for United States, "South Korea" for Korea. "undergraduates" = Freshman through Senior. For fellowship/REU catalogs, extract every listed program even if details are minimal.
 
 TEXT:
 {truncated}'''
@@ -369,7 +394,7 @@ TEXT:
             return []
 
     def update_deadline_with_gemini(self, raw_text: str, program_name: str) -> str | None:
-        truncated = raw_text[:8000]
+        truncated = raw_text[:GEMINI_DEADLINE_TRUNCATE]
         prompt = f'''Look at this webpage text for the program "{program_name}".
 Find the application deadline for 2026.
 Return ONLY the deadline in YYYY-MM-DD format, or "Rolling" if rolling admissions, or "Unknown" if not found.
@@ -407,7 +432,7 @@ TEXT:
                 "organization": validated["organization"],
                 "title": validated["title"],
                 "url": validated["url"],
-                "description": (validated.get("description") or "")[:2000],
+                "description": (validated.get("description") or "")[:DESCRIPTION_MAX_LEN],
                 "field": validated["field"],
                 "opportunity_type": validated["opportunity_type"],
                 "year_level": validated["year_level"],
@@ -481,9 +506,9 @@ TEXT:
 
             if opp["deadline"] == "Unknown":
                 text = self.scrape_static(prog["url"], prog["organization"])
-                if not text or len(text) < 200:
+                if not text or len(text) < MIN_SCRAPE_LENGTH:
                     text = self.scrape_dynamic(prog["url"], prog["organization"])
-                if text and len(text) > 200:
+                if text and len(text) > MIN_SCRAPE_LENGTH:
                     dl = self.update_deadline_with_gemini(text, prog["title"])
                     if dl:
                         opp["deadline"] = dl
@@ -501,9 +526,57 @@ TEXT:
     # TIER B — APIs (daily)
     # ==================================================================
 
+    def _fetch_usajobs(self, query: str, api_headers: dict, hiring_path: str | None) -> list[dict]:
+        """Fetch USAJobs for one query. hiring_path=None means no filter."""
+        params = {"Keyword": query, "ResultsPerPage": 50}
+        if hiring_path:
+            params["HiringPath"] = hiring_path
+        try:
+            resp = self.session.get(
+                "https://data.usajobs.gov/api/Search",
+                headers=api_headers, params=params, timeout=15,
+            )
+            resp.raise_for_status()
+            items = resp.json().get("SearchResult", {}).get("SearchResultItems", [])
+            opps = []
+            for item in items:
+                obj = item.get("MatchedObjectDescriptor", {})
+                locations = obj.get("PositionLocation", [{}])
+                loc = locations[0] if locations else {}
+                loc_name = loc.get("LocationName", "")
+                city, state = None, None
+                if ", " in loc_name:
+                    parts = loc_name.split(", ")
+                    city, state = parts[0], (parts[1] if len(parts) > 1 else None)
+                remuneration = obj.get("PositionRemuneration", [{}])
+                pay = remuneration[0] if remuneration else {}
+                min_p, max_p = pay.get("MinimumRange", ""), pay.get("MaximumRange", "")
+                comp = f"${min_p}-${max_p}" if min_p else None
+                opps.append({
+                    "organization": obj.get("OrganizationName", ""),
+                    "title": obj.get("PositionTitle", ""),
+                    "url": obj.get("PositionURI", ""),
+                    "description": (obj.get("QualificationSummary", "") or "")[:500],
+                    "field": self.infer_field(query),
+                    "opportunity_type": "Internship",
+                    "year_level": ["Any"],
+                    "city": city, "state": state, "country": "USA",
+                    "is_remote": False,
+                    "deadline": obj.get("ApplicationCloseDate", "Unknown"),
+                    "is_paid": bool(comp), "compensation": comp,
+                    "source": "USAJobs",
+                })
+            return opps
+        except Exception as e:
+            logger.error(f"[USAJobs] '{query}' failed: {e}")
+            with self._stats_lock:
+                self.stats["errors"] += 1
+            return []
+
     def tier_usajobs(self) -> list[dict]:
         if not self.usajobs_key or self.usajobs_key.startswith("여기에"):
             logger.warning("[USAJobs] API key not set, skipping")
+            logger.info("  (skipped: API key not set)")
             return []
 
         queries = [
@@ -522,57 +595,28 @@ TEXT:
         all_opps: list[dict] = []
 
         for query in queries:
-            try:
-                params = {"Keyword": query, "HiringPath": "students", "ResultsPerPage": 50}
-                resp = self.session.get(
-                    "https://data.usajobs.gov/api/Search",
-                    headers=api_headers, params=params, timeout=15,
-                )
-                resp.raise_for_status()
-                items = resp.json().get("SearchResult", {}).get("SearchResultItems", [])
+            opps = self._fetch_usajobs(query, api_headers, "student")
+            all_opps.extend(opps)
+            logger.info(f"[USAJobs] '{query}' (student): {len(opps)} results")
+            time.sleep(2)
 
-                for item in items:
-                    obj = item.get("MatchedObjectDescriptor", {})
-                    locations = obj.get("PositionLocation", [{}])
-                    loc = locations[0] if locations else {}
-                    loc_name = loc.get("LocationName", "")
-                    city, state = None, None
-                    if ", " in loc_name:
-                        parts = loc_name.split(", ")
-                        city, state = parts[0], (parts[1] if len(parts) > 1 else None)
-
-                    remuneration = obj.get("PositionRemuneration", [{}])
-                    pay = remuneration[0] if remuneration else {}
-                    min_p, max_p = pay.get("MinimumRange", ""), pay.get("MaximumRange", "")
-                    comp = f"${min_p}-${max_p}" if min_p else None
-
-                    all_opps.append({
-                        "organization": obj.get("OrganizationName", ""),
-                        "title": obj.get("PositionTitle", ""),
-                        "url": obj.get("PositionURI", ""),
-                        "description": (obj.get("QualificationSummary", "") or "")[:500],
-                        "field": self.infer_field(query),
-                        "opportunity_type": "Internship",
-                        "year_level": ["Any"],
-                        "city": city, "state": state, "country": "USA",
-                        "is_remote": False,
-                        "deadline": obj.get("ApplicationCloseDate", "Unknown"),
-                        "is_paid": bool(comp), "compensation": comp,
-                        "source": "USAJobs",
-                    })
-
-                logger.info(f"[USAJobs] '{query}': {len(items)} results")
+        if len(all_opps) == 0:
+            logger.info("[USAJobs] Student path returned 0; trying fallback (public)")
+            fallback_queries = ["STEM internship", "engineering intern", "computer science intern", "biology research"]
+            for query in fallback_queries:
+                opps = self._fetch_usajobs(query, api_headers, None)
+                all_opps.extend(opps)
+                logger.info(f"[USAJobs] '{query}' (no HiringPath): {len(opps)} results")
                 time.sleep(2)
-            except Exception as e:
-                logger.error(f"[USAJobs] '{query}' failed: {e}")
-                self.stats["errors"] += 1
 
-        self.stats["by_tier"]["api"] += len(all_opps)
+        with self._stats_lock:
+            self.stats["by_tier"]["api"] += len(all_opps)
         return all_opps
 
     def tier_adzuna(self) -> list[dict]:
         if not self.adzuna_id or self.adzuna_id.startswith("여기에"):
             logger.warning("[Adzuna] API keys not set, skipping")
+            logger.info("  (skipped: API keys not set)")
             return []
 
         searches = [
@@ -644,9 +688,174 @@ TEXT:
                 time.sleep(2)
             except Exception as e:
                 logger.error(f"[Adzuna] {cc}/{query} failed: {e}")
-                self.stats["errors"] += 1
+                with self._stats_lock:
+                    self.stats["errors"] += 1
 
-        self.stats["by_tier"]["api"] += len(all_opps)
+        with self._stats_lock:
+            self.stats["by_tier"]["api"] += len(all_opps)
+        return all_opps
+
+    def tier_themuse(self) -> list[dict]:
+        """The Muse API - free job/internship listings."""
+        if not self.themuse_key or self.themuse_key.startswith("여기에"):
+            logger.warning("[The Muse] API key not set, skipping")
+            logger.info("  (skipped: API key not set)")
+            return []
+
+        categories = [
+            ("Data Science", "Data and Analytics"),
+            ("Computer Science", "Computer and IT"),
+            ("Engineering", "Engineering"),
+            ("Biology", "Science"),
+            ("Chemistry", "Science"),
+            ("Physics", "Science"),
+        ]
+        all_opps: list[dict] = []
+        seen_urls: set[str] = set()
+
+        for field, cat in categories:
+            for page in range(3):
+                try:
+                    params = {
+                        "page": page,
+                        "category": cat,
+                        "api_key": self.themuse_key,
+                    }
+                    resp = self.session.get(
+                        "https://www.themuse.com/api/public/jobs",
+                        params=params,
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    results = data.get("results", [])
+
+                    for r in results:
+                        refs = r.get("refs", {}) or {}
+                        url = refs.get("landing_page", "") or r.get("url", "")
+                        if not url or not url.startswith("http"):
+                            continue
+                        if url in seen_urls:
+                            continue
+                        seen_urls.add(url)
+                        locs = r.get("locations", [])
+                        loc = locs[0] if locs else {}
+                        loc_name = (loc.get("name") or "")
+                        if "korea" in loc_name.lower() or "seoul" in loc_name.lower():
+                            country = "South Korea"
+                        else:
+                            country = "USA"
+                        if country not in VALID_COUNTRIES:
+                            continue
+                        contents = r.get("contents") or ""
+                        if isinstance(contents, dict):
+                            contents = contents.get("summary", "") or str(contents)[:500]
+                        desc = (contents or "")[:500] if isinstance(contents, str) else ""
+                        all_opps.append({
+                            "organization": (r.get("company") or {}).get("name", "Unknown"),
+                            "title": r.get("name", ""),
+                            "url": url,
+                            "description": desc,
+                            "field": field,
+                            "opportunity_type": "Internship",
+                            "year_level": ["Any"],
+                            "city": loc_name.split(",")[0].strip() if loc_name else None,
+                            "state": None,
+                            "country": country,
+                            "is_remote": "remote" in loc_name.lower(),
+                            "deadline": "Unknown",
+                            "is_paid": None,
+                            "compensation": None,
+                            "source": "The Muse",
+                        })
+
+                    if len(results) < 20:
+                        break
+                    time.sleep(1)
+                except Exception as e:
+                    logger.error(f"[The Muse] {cat} page {page} failed: {e}")
+                    with self._stats_lock:
+                        self.stats["errors"] += 1
+
+        with self._stats_lock:
+            self.stats["by_tier"]["muse"] += len(all_opps)
+        logger.info(f"[The Muse] {len(all_opps)} opportunities")
+        return all_opps
+
+    def tier_jsearch(self) -> list[dict]:
+        """JSearch API via RapidAPI - aggregates Indeed, LinkedIn, Glassdoor, etc."""
+        if not self.rapidapi_key or self.rapidapi_key.startswith("여기에"):
+            logger.warning("[JSearch] RapidAPI key not set, skipping")
+            logger.info("  (skipped: API key not set)")
+            return []
+
+        queries = [
+            "chemistry research internship",
+            "biology internship",
+            "computer science internship",
+            "data science internship",
+            "physics internship",
+            "engineering internship",
+        ]
+        all_opps: list[dict] = []
+        headers = {
+            "X-RapidAPI-Key": self.rapidapi_key,
+            "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
+        }
+
+        for query in queries:
+            try:
+                params = {"query": f"{query} USA", "page": "1", "num_pages": "1"}
+                resp = self.session.get(
+                    "https://jsearch.p.rapidapi.com/search",
+                    headers=headers,
+                    params=params,
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("data", [])
+
+                for r in results:
+                    title = r.get("job_title", "")
+                    combined = (title + " " + (r.get("job_description", "") or "")).lower()
+                    if any(w in combined for w in ["senior", "manager", "director", "10+ years"]):
+                        continue
+                    employer = r.get("employer_name", "Unknown")
+                    job_city = r.get("job_city")
+                    job_country = r.get("job_country", "USA")
+                    if job_country and "korea" in str(job_country).lower():
+                        country = "South Korea"
+                    else:
+                        country = "USA"
+                    all_opps.append({
+                        "organization": employer,
+                        "title": title,
+                        "url": r.get("job_apply_link", r.get("job_google_link", "")),
+                        "description": (r.get("job_description", "") or "")[:500],
+                        "field": self.infer_field(query),
+                        "opportunity_type": "Internship",
+                        "year_level": ["Any"],
+                        "city": job_city,
+                        "state": r.get("job_state"),
+                        "country": country,
+                        "is_remote": r.get("job_is_remote", False),
+                        "deadline": "Unknown",
+                        "is_paid": bool(r.get("job_min_salary") or r.get("job_max_salary")),
+                        "compensation": _jsearch_comp(r.get("job_min_salary"), r.get("job_max_salary")),
+                        "source": "JSearch",
+                    })
+
+                logger.info(f"[JSearch] '{query}': {len(results)} results")
+                time.sleep(2)
+            except Exception as e:
+                logger.error(f"[JSearch] '{query}' failed: {e}")
+                with self._stats_lock:
+                    self.stats["errors"] += 1
+
+        with self._stats_lock:
+            self.stats["by_tier"]["jsearch"] += len(all_opps)
+        logger.info(f"[JSearch] {len(all_opps)} opportunities")
         return all_opps
 
     # ==================================================================
@@ -676,7 +885,8 @@ TEXT:
                 ("ACS Careers", "https://www.acs.org/careers.html", "static"),
             ],
             5: [
-                ("Pathways to Science – Fellowships", "https://pathwaystoscience.org/programs.aspx?adv=adv&descriptorhub=GradFellowships_Graduate+Fellowships", "dynamic"),
+                # Use u= (basic search) - adv=adv triggers server error on this page
+                ("Pathways to Science – Fellowships", "https://pathwaystoscience.org/programs.aspx?u=GradFellowships_Graduate+Fellowships", "dynamic"),
             ],
             6: [
                 ("Cientifico Latino REU", "https://www.cientificolatino.com/reu", "dynamic"),
@@ -695,12 +905,15 @@ TEXT:
                 text = self.scrape_dynamic(url, name)
             else:
                 text = self.scrape_static(url, name)
-                if not text or len(text) < 200:
+                if not text or len(text) < MIN_SCRAPE_LENGTH:
                     text = self.scrape_dynamic(url, name)
 
             if text:
-                opps = self.parse_with_gemini(text, name, url)
-                all_opps.extend(opps)
+                if "Server Error" in text or "Exception" in text[:500]:
+                    logger.warning(f"[{name}] Page returned error content, skipping")
+                else:
+                    opps = self.parse_with_gemini(text, name, url)
+                    all_opps.extend(opps)
             time.sleep(2)
 
         self.stats["by_tier"]["aggregator"] += len(all_opps)
@@ -803,15 +1016,41 @@ TEXT:
 
         all_opps: list[dict] = []
 
-        tiers = [
-            ("Tier A: Curated Programs", self.tier_curated),
+        logger.info(f"\n{'─' * 40}")
+        logger.info("▶ Tier A: Curated Programs")
+        try:
+            opps = self.tier_curated()
+            all_opps.extend(opps)
+            logger.info(f"  → {len(opps)} opportunities")
+        except Exception as e:
+            logger.error(f"  ✗ Tier A CRASHED: {e}")
+            self.stats["errors"] += 1
+
+        api_tiers = [
             ("Tier B: USAJobs API", self.tier_usajobs),
             ("Tier B: Adzuna API", self.tier_adzuna),
+            ("Tier B: The Muse API", self.tier_themuse),
+            ("Tier B: JSearch API", self.tier_jsearch),
+        ]
+        logger.info(f"\n{'─' * 40}")
+        logger.info("▶ Tier B: APIs (parallel)")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(func): name for name, func in api_tiers}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    opps = future.result()
+                    all_opps.extend(opps)
+                    logger.info(f"  {name}: {len(opps)} opportunities")
+                except Exception as e:
+                    logger.error(f"  ✗ {name} CRASHED: {e}")
+                    with self._stats_lock:
+                        self.stats["errors"] += 1
+
+        for name, func in [
             ("Tier C: Aggregator Scraping", self.tier_aggregators),
             ("Tier D: Indeed Search", self.tier_indeed),
-        ]
-
-        for name, func in tiers:
+        ]:
             try:
                 logger.info(f"\n{'─' * 40}")
                 logger.info(f"▶ {name}")
@@ -830,11 +1069,11 @@ TEXT:
                 seen.add(u)
                 unique.append(opp)
 
-        allowed_countries = VALID_COUNTRIES | set(COUNTRY_ALIASES)
+        allowed_countries = VALID_COUNTRIES | set(COUNTRY_ALIASES.values())
         filtered: list[dict] = []
         for opp in unique:
-            country = opp.get("country", "")
-            if country and country not in allowed_countries:
+            country = normalize_country(opp.get("country"))
+            if country not in allowed_countries:
                 continue
             dl_date = parse_deadline(opp.get("deadline", "Unknown"))
             if dl_date and dl_date < self.today:
@@ -863,6 +1102,8 @@ TEXT:
         logger.info(
             f"  By tier: Curated={self.stats['by_tier']['curated']}, "
             f"API={self.stats['by_tier']['api']}, "
+            f"Muse={self.stats['by_tier']['muse']}, "
+            f"JSearch={self.stats['by_tier']['jsearch']}, "
             f"Aggregator={self.stats['by_tier']['aggregator']}, "
             f"Indeed={self.stats['by_tier']['rotation']}"
         )
@@ -891,7 +1132,7 @@ TEXT:
                 if count == 0:
                     logger.warning("[Health] WARNING: Database has 0 active opportunities!")
             else:
-                logger.warning(f"[Health] Could not parse count from response")
+                logger.warning("[Health] Could not parse count from response")
         except Exception as e:
             logger.warning(f"[Health] Check failed: {e}")
 
@@ -916,6 +1157,8 @@ TEXT:
 |------|-------|
 | Curated Programs | {tiers['curated']} |
 | APIs (USAJobs + Adzuna) | {tiers['api']} |
+| The Muse | {tiers['muse']} |
+| JSearch | {tiers['jsearch']} |
 | Aggregators | {tiers['aggregator']} |
 | Indeed | {tiers['rotation']} |
 """
