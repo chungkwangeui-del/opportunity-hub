@@ -413,9 +413,7 @@ TEXT:
             return None
 
     def save_to_supabase(self, opportunities: list[dict]) -> int:
-        saved = 0
-        dupes = 0
-        invalid = 0
+        BATCH_SIZE = 50
         api_url = f"{self.supabase_url}/rest/v1/opportunities?on_conflict=url"
         headers = {
             "apikey": self.supabase_key,
@@ -423,12 +421,15 @@ TEXT:
             "Content-Type": "application/json",
             "Prefer": "resolution=merge-duplicates",
         }
+
+        payloads: list[dict] = []
+        invalid = 0
         for opp in opportunities:
             validated = validate_opportunity(opp)
             if not validated:
                 invalid += 1
                 continue
-            payload = {
+            payloads.append({
                 "organization": validated["organization"],
                 "title": validated["title"],
                 "url": validated["url"],
@@ -447,21 +448,39 @@ TEXT:
                 "compensation": validated.get("compensation"),
                 "source": validated.get("source", ""),
                 "is_active": True,
-            }
-            try:
-                resp = self.session.post(api_url, headers=headers, json=payload, timeout=10)
-                if resp.status_code in (200, 201):
-                    saved += 1
-                elif resp.status_code == 409:
-                    dupes += 1
-                else:
-                    logger.warning(f"Supabase {resp.status_code}: {validated.get('title','?')}")
-            except Exception as e:
-                logger.error(f"DB save fail [{validated.get('title','?')}]: {e}")
-        self.stats["saved"] += saved
+            })
+
         if invalid:
             logger.info(f"Validation dropped {invalid} invalid opportunities")
-        logger.info(f"Saved {saved}/{len(opportunities)} to Supabase ({dupes} existing, updated)")
+
+        saved = 0
+        for i in range(0, len(payloads), BATCH_SIZE):
+            batch = payloads[i : i + BATCH_SIZE]
+            try:
+                resp = self.session.post(api_url, headers=headers, json=batch, timeout=30)
+                if resp.status_code in (200, 201):
+                    saved += len(batch)
+                else:
+                    logger.warning(f"Supabase batch {i // BATCH_SIZE + 1} failed: {resp.status_code}")
+                    for p in batch:
+                        try:
+                            r = self.session.post(api_url, headers=headers, json=p, timeout=10)
+                            if r.status_code in (200, 201):
+                                saved += 1
+                        except Exception as e:
+                            logger.error(f"DB save fail [{p.get('title','?')}]: {e}")
+            except Exception as e:
+                logger.error(f"Supabase batch failed: {e}, falling back to per-item")
+                for p in batch:
+                    try:
+                        r = self.session.post(api_url, headers=headers, json=p, timeout=10)
+                        if r.status_code in (200, 201):
+                            saved += 1
+                    except Exception as err:
+                        logger.error(f"DB save fail [{p.get('title','?')}]: {err}")
+
+        self.stats["saved"] += saved
+        logger.info(f"Saved {saved}/{len(opportunities)} to Supabase")
         return saved
 
     def save_to_json(self, opportunities: list[dict]):
